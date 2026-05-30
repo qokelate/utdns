@@ -226,7 +226,7 @@ static int dns_name_to_buf(const char *src, char *buf, int len)
    return nlen + 1;
 }
 
-#ifdef USE_FCNTL
+
 static int set_nonblock(int s)
 {
    if (fcntl(s, F_SETFL, O_NONBLOCK) == -1)
@@ -236,7 +236,7 @@ static int set_nonblock(int s)
    }
    return 0;
 }
-#endif
+
 
 /*! This function opens a UDP socket on all addresses (0.0.0.0 and ::) of the
  * host at the given port number.

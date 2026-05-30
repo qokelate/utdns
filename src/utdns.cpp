@@ -371,7 +371,7 @@ static int connect_to_dns_server(const struct sockaddr *dns_addr, socklen_t addr
          return -1;
       }
 
-      set_nonblock(sock);
+      SET_NONBLOCK(sock);
 
       log_msg(LOG_DEBUG, "connecting %d to NS", sock);
       return sock;

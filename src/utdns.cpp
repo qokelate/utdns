@@ -34,6 +34,7 @@
  * redirect all incoming traffic
  * iptables -t nat -A PREROUTING -p udp --dport 53 -j REDIRECT --to-ports 5300
  */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -48,10 +49,10 @@
 #include <sys/select.h>
 #include <sys/stat.h>
 #include <netinet/in.h>
-#include <arpa/inet.h>     // inet_addr()
+#include <arpa/inet.h> // inet_addr()
 
 #include "socks5.hpp"
-
+#include "yuarel.h"
 
 #define HAVE_CONFIG_H 1
 
@@ -66,7 +67,6 @@
 // timeout [s] after which a stale transaction is removed
 #define TIMEOUT 10
 
-
 #define LOG_WARN LOG_WARNING
 #define FRAMESIZE 65536
 #define NOBODY 65534
@@ -79,26 +79,29 @@
 #define SET_NONBLOCK(x)
 #endif
 
-
 typedef struct dns_trx
 {
-   struct sockaddr_storage addr;    // keep socket address of original UDP sender
+   struct sockaddr_storage addr; // keep socket address of original UDP sender
    socklen_t addr_len;
-   time_t time;                     // incoming timestamp
-   int dst_sock;                    // socket fd of outgoing TCP connection
-   int in_sock;                     // socket fd for incoming TCP connection
-   int conn_state;                  // state of transaction
-   int data_len;                    // data length to send
-   char data[FRAMESIZE + 2];        // data
+   time_t time;              // incoming timestamp
+   int dst_sock;             // socket fd of outgoing TCP connection
+   int in_sock;              // socket fd for incoming TCP connection
+   int conn_state;           // state of transaction
+   int data_len;             // data length to send
+   char data[FRAMESIZE + 2]; // data
 } dns_trx_t;
 
+const char *socks5_proxy_url = NULL;
 
-void log_msg(int, const char*, ...) __attribute__((format (printf, 2, 3)));
-FILE *init_log(const char*, int);
+void log_msg(int, const char *, ...) __attribute__((format(printf, 2, 3)));
+FILE *init_log(const char *, int);
 
-
-enum {CONN_STATE_NA, CONN_STATE_SEND, CONN_STATE_RECV};
-
+enum
+{
+   CONN_STATE_NA,
+   CONN_STATE_SEND,
+   CONN_STATE_RECV
+};
 
 /*! This function decodes the RR type and returns a constant string pointer.
  *  @param type Numeric RR type.
@@ -108,33 +111,47 @@ static const char *dns_rr_type(int type)
 {
    switch (type)
    {
-      case 1: return "A";
-      case 28: return "AAAA";
-      case 5: return "CNAME";
-      case 2: return "NS";
-      case 12: return "PTR";
-      case 6: return "SOA";
-      case 15: return "MX";
-      case 0xff: return "ANY";
-      default: return "(tbd)";
+   case 1:
+      return "A";
+   case 28:
+      return "AAAA";
+   case 5:
+      return "CNAME";
+   case 2:
+      return "NS";
+   case 12:
+      return "PTR";
+   case 6:
+      return "SOA";
+   case 15:
+      return "MX";
+   case 0xff:
+      return "ANY";
+   default:
+      return "(tbd)";
    }
 }
-
 
 static const char *dns_rcode(int code)
 {
    switch (code)
    {
-      case 0: return "NOERROR";
-      case 1: return "FORMERR";
-      case 2: return "SERVFAIL";
-      case 3: return "NXDOMAIN";
-      case 4: return "NOTIMP";
-      case 5: return "REFUSED";
-      default: return "";
+   case 0:
+      return "NOERROR";
+   case 1:
+      return "FORMERR";
+   case 2:
+      return "SERVFAIL";
+   case 3:
+      return "NXDOMAIN";
+   case 4:
+      return "NOTIMP";
+   case 5:
+      return "REFUSED";
+   default:
+      return "";
    }
 }
-
 
 /*! Dns_label_to_buf() converts one label of a domain name to a \0-terminated C
  *  character string. Compressed labels (0xc0) are not decompressed but binary
@@ -173,7 +190,8 @@ static int dns_label_to_buf(const char *src, char *buf, int len)
    {
       llen = *src & 0xff;
       //*buf++ = *src++;
-      if (!llen) len = 256;
+      if (!llen)
+         len = 256;
       llen--;
       llen >>= 3;
       llen++;
@@ -183,7 +201,6 @@ static int dns_label_to_buf(const char *src, char *buf, int len)
    *buf = '\0';
    return i;
 }
-
 
 /*! Decodes a domain name consisting of several DNS labels.
  *  @param src Pointer to domain name.
@@ -196,7 +213,7 @@ static int dns_name_to_buf(const char *src, char *buf, int len)
 {
    int llen, nlen;
 
-   for (nlen = 0;;src += llen + 1)
+   for (nlen = 0;; src += llen + 1)
    {
       if (!(llen = dns_label_to_buf(src, buf, len)))
          break;
@@ -209,7 +226,6 @@ static int dns_name_to_buf(const char *src, char *buf, int len)
    return nlen + 1;
 }
 
-
 #ifdef USE_FCNTL
 static int set_nonblock(int s)
 {
@@ -221,7 +237,6 @@ static int set_nonblock(int s)
    return 0;
 }
 #endif
-
 
 /*! This function opens a UDP socket on all addresses (0.0.0.0 and ::) of the
  * host at the given port number.
@@ -239,19 +254,19 @@ static int init_srv_socket(int family, int type, int port)
 
    switch (family)
    {
-      case AF_INET6:
-        ((struct sockaddr_in6*) &sock_addr)->sin6_port = htons(port);
-        len = sizeof(struct sockaddr_in6);
-         break;
+   case AF_INET6:
+      ((struct sockaddr_in6 *)&sock_addr)->sin6_port = htons(port);
+      len = sizeof(struct sockaddr_in6);
+      break;
 
-      case AF_INET:
-        ((struct sockaddr_in*) &sock_addr)->sin_port = htons(port);
-        len = sizeof(struct sockaddr_in);
-         break;
+   case AF_INET:
+      ((struct sockaddr_in *)&sock_addr)->sin_port = htons(port);
+      len = sizeof(struct sockaddr_in);
+      break;
 
-      default:
-         log_msg(LOG_ERR, "ill address family 0x%04x", family);
-         return -1;
+   default:
+      log_msg(LOG_ERR, "ill address family 0x%04x", family);
+      return -1;
    }
 
    if ((sock = socket(family, type | SOCK_NONBLOCK, 0)) == -1)
@@ -262,21 +277,20 @@ static int init_srv_socket(int family, int type, int port)
 
    SET_NONBLOCK(sock);
 
-   if (bind(sock, (struct sockaddr*) &sock_addr, len) == -1)
+   if (bind(sock, (struct sockaddr *)&sock_addr, len) == -1)
    {
       log_msg(LOG_ERR, "binding udp socket failed: %s", strerror(errno));
-      (void) close(sock);
+      (void)close(sock);
       return -1;
    }
 
    return sock;
 }
 
-
 static int init_tcp_socket(int family, int port)
 {
    int s;
-   
+
    if ((s = init_srv_socket(family, SOCK_STREAM, port)) == -1)
       return -1;
 
@@ -290,12 +304,10 @@ static int init_tcp_socket(int family, int port)
    return s;
 }
 
-
 static int init_udp_socket(int family, int port)
 {
    return init_srv_socket(family, SOCK_DGRAM, port);
 }
-
 
 /*! Simple logging function which outputs some information about a (newly
  * created) DNS transaction.
@@ -306,15 +318,14 @@ static void log_udp_in(const dns_trx_t *dt)
    char buf[64], name[256];
    int len, qtype;
 
-   if (getnameinfo((struct sockaddr*) &dt->addr, dt->addr_len, buf, sizeof(buf), NULL, 0, NI_NUMERICHOST))
+   if (getnameinfo((struct sockaddr *)&dt->addr, dt->addr_len, buf, sizeof(buf), NULL, 0, NI_NUMERICHOST))
       return;
 
    len = dns_name_to_buf(dt->data + 14, name, sizeof(name));
-   qtype = ntohs(*((int16_t*) (dt->data + 14 + len)));
-   log_msg(LOG_INFO, "%d bytes incoming from %s, id = 0x%04x, '%s'/%s", dt->data_len, buf, 
-         (int) ntohs(*((int16_t*) (dt->data + 2))), name, dns_rr_type(qtype));
+   qtype = ntohs(*((int16_t *)(dt->data + 14 + len)));
+   log_msg(LOG_INFO, "%d bytes incoming from %s, id = 0x%04x, '%s'/%s", dt->data_len, buf,
+           (int)ntohs(*((int16_t *)(dt->data + 2))), name, dns_rr_type(qtype));
 }
-
 
 /*! Asynchronously (non-blocking) open a TCP session to a given destination.
  *  @param dns_addr Destinationa address.
@@ -324,8 +335,49 @@ static void log_udp_in(const dns_trx_t *dt)
  */
 static int connect_to_dns_server(const struct sockaddr *dns_addr, socklen_t addr_len)
 {
-   int sock;
 
+   if (socks5_proxy_url)
+   {
+      log_msg(LOG_DEBUG, "use socks5: %s", socks5_proxy_url);
+
+      struct yuarel url = {0};
+      struct yuarel_param params[1024] = {0};
+      char tmp2[1024];
+      strncpy(tmp2, socks5_proxy_url, sizeof(tmp2));
+      if (-1 == yuarel_parse(&url, tmp2))
+      {
+         log_msg(LOG_ERR, "invalid socks5 url: %s", socks5_proxy_url);
+         return -1;
+      }
+
+      int sock;
+      if ((sock = socket(AF_INET, SOCK_STREAM, 0)) == -1)
+      {
+         log_msg(LOG_ERR, "creating tcp socket for NS connection failed: %s", strerror(errno));
+         return -1;
+      }
+
+      SCE_socks5 px;
+      px.socketfd = sock;
+
+      char ip_str[64];
+      const struct sockaddr_in *ipv4 = (const struct sockaddr_in *)dns_addr;
+      inet_ntop(AF_INET, &(ipv4->sin_addr), ip_str, sizeof(ip_str));
+      bool r = px.socks5_connect(ip_str, ntohs(ipv4->sin_port), url.host, url.port, url.username, url.password);
+      if (!r)
+      {
+         log_msg(LOG_ERR, "init socks5 connection failed");
+         (void)close(sock);
+         return -1;
+      }
+
+      set_nonblock(sock);
+
+      log_msg(LOG_DEBUG, "connecting %d to NS", sock);
+      return sock;
+   }
+
+   int sock;
    if ((sock = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0)) == -1)
    {
       log_msg(LOG_ERR, "creating tcp socket for NS connection failed: %s", strerror(errno));
@@ -335,17 +387,16 @@ static int connect_to_dns_server(const struct sockaddr *dns_addr, socklen_t addr
    SET_NONBLOCK(sock);
 
    if (connect(sock, dns_addr, addr_len) == -1 &&
-         errno != EINPROGRESS)
+       errno != EINPROGRESS)
    {
       log_msg(LOG_ERR, "async connect to NS connection failed: %s", strerror(errno));
-      (void) close(sock);
+      (void)close(sock);
       return -1;
    }
 
    log_msg(LOG_DEBUG, "connecting %d to NS", sock);
    return sock;
 }
-
 
 /*! Send data to remote NS on an open TCP session.
  *  @param trx Pointer to DNS transaction structure containing the data.
@@ -364,7 +415,7 @@ static int send_to_dns(dns_trx_t *trx)
       return -1;
    }
    log_msg(LOG_DEBUG, "sending data to NS on %d", trx->dst_sock);
-   
+
    if (len < trx->data_len)
    {
       // FIXME: LOG_WARN?
@@ -377,7 +428,6 @@ static int send_to_dns(dns_trx_t *trx)
    trx->data_len -= len;
    return len;
 }
-
 
 /*! Get_free_trx() looks up and returns a pointer to a currently unused
  *  transaction structure within the table of transactions.
@@ -398,7 +448,6 @@ static dns_trx_t *get_free_trx(dns_trx_t *trx, int trx_cnt)
       }
    return NULL;
 }
-
 
 /*! This is the main routing for dispatching packets between UDP clients and
  * the TCP name server. It keeps track on all transactions within the
@@ -440,7 +489,7 @@ static int dispatch_packets(int udp_sock, int tcp_sock, dns_trx_t *trx, int trx_
          if (trx[i].time < curr - TIMEOUT)
          {
             log_msg(LOG_NOTICE, "removing stale socket %d", trx[i].dst_sock);
-            (void) close(trx[i].dst_sock);
+            (void)close(trx[i].dst_sock);
             trx[i].dst_sock = 0;
             continue;
          }
@@ -489,7 +538,7 @@ static int dispatch_packets(int udp_sock, int tcp_sock, dns_trx_t *trx, int trx_
          {
             inp->addr_len = sizeof(inp->addr);
             if ((inp->data_len = recvfrom(udp_sock, &inp->data[2], sizeof(inp->data) - 2, 0,
-                     (struct sockaddr*) &inp->addr, &inp->addr_len)) == -1)
+                                          (struct sockaddr *)&inp->addr, &inp->addr_len)) == -1)
             {
                log_msg(LOG_ERR, "recvfrom() on udp socket failed: %s", strerror(errno));
                return -1;
@@ -508,7 +557,7 @@ static int dispatch_packets(int udp_sock, int tcp_sock, dns_trx_t *trx, int trx_
                {
                   inp->conn_state = CONN_STATE_SEND;
                   // set length header for DNS/TCP
-                  *((uint16_t*) &inp->data[0]) = htons(inp->data_len);
+                  *((uint16_t *)&inp->data[0]) = htons(inp->data_len);
                   inp->data_len += 2;
                   inp->time = time(NULL);
                }
@@ -517,7 +566,7 @@ static int dispatch_packets(int udp_sock, int tcp_sock, dns_trx_t *trx, int trx_
                log_msg(LOG_WARN, "ignoring short datagram (len = %d)", inp->data_len);
          }
       } // if (FD_ISSET(udp_sock, &rset))
-      
+
       // check if new incoming tcp session
       if (FD_ISSET(tcp_sock, &rset))
       {
@@ -528,7 +577,7 @@ static int dispatch_packets(int udp_sock, int tcp_sock, dns_trx_t *trx, int trx_
          }
          else
          {
-            if ((inp->in_sock = accept(tcp_sock, (struct sockaddr*) &inp->addr, &inp->addr_len)) == -1)
+            if ((inp->in_sock = accept(tcp_sock, (struct sockaddr *)&inp->addr, &inp->addr_len)) == -1)
                log_msg(LOG_ERR, "accept(%d) failed: %s", tcp_sock, strerror(errno));
 
             log_msg(LOG_INFO, "accepted new session on %d", inp->in_sock);
@@ -549,7 +598,7 @@ static int dispatch_packets(int udp_sock, int tcp_sock, dns_trx_t *trx, int trx_
             if ((len = recv(trx[i].dst_sock, trx[i].data + trx[i].data_len, sizeof(trx[i].data) - trx[i].data_len, 0)) == -1)
             {
                log_msg(LOG_ERR, "failed to recv() on tcp socket %d: %s. Dropping", trx[i].dst_sock, strerror(errno));
-               (void) close(trx[i].dst_sock);
+               (void)close(trx[i].dst_sock);
                trx[i].dst_sock = 0;
                continue;
             }
@@ -557,22 +606,22 @@ static int dispatch_packets(int udp_sock, int tcp_sock, dns_trx_t *trx, int trx_
             trx[i].data_len += len;
             log_msg(LOG_DEBUG, "received %d bytes on tcp socket %d", len, trx[i].dst_sock);
 
-            if (trx[i].data_len - 2 == ntohs(*((uint16_t*) &trx[i].data[0])))
+            if (trx[i].data_len - 2 == ntohs(*((uint16_t *)&trx[i].data[0])))
             {
                trx[i].data_len -= 2;
-               (void) close(trx[i].dst_sock);
+               (void)close(trx[i].dst_sock);
                trx[i].dst_sock = 0;
 
                // FIXME: this should be implemented asynchronous as well
                if ((len = sendto(udp_sock, &trx[i].data[2], trx[i].data_len, 0,
-                     (struct sockaddr*) &trx[i].addr, trx[i].addr_len)) == -1)
+                                 (struct sockaddr *)&trx[i].addr, trx[i].addr_len)) == -1)
                {
                   log_msg(LOG_ERR, "sendto() on udp failed: %s. dropping data", strerror(errno));
                }
                else
                {
                   log_msg(LOG_INFO, "replied %d/%d bytes on udp, id = 0x%04x, RCODE = %s", len, trx[i].data_len,
-                        (int) ntohs(*((int16_t*) (trx[i].data + 2))), dns_rcode(trx[i].data[5] & 15));
+                          (int)ntohs(*((int16_t *)(trx[i].data + 2))), dns_rcode(trx[i].data[5] & 15));
                }
                trx[i].data_len = 0;
             }
@@ -580,7 +629,7 @@ static int dispatch_packets(int udp_sock, int tcp_sock, dns_trx_t *trx, int trx_
             {
                // FIXME: handle better
                log_msg(LOG_NOTICE, "received truncated packet on tcp %d. expect %d got %d, waiting",
-                     trx[i].dst_sock, trx[i].data_len, (int) ntohs(*((uint16_t*) &trx[i].data[0])));
+                       trx[i].dst_sock, trx[i].data_len, (int)ntohs(*((uint16_t *)&trx[i].data[0])));
             }
          } // if (FD_ISSET(trx[i].dst_sock, &rset))
 
@@ -592,13 +641,13 @@ static int dispatch_packets(int udp_sock, int tcp_sock, dns_trx_t *trx, int trx_
             if (getsockopt(trx[i].dst_sock, SOL_SOCKET, SO_ERROR, &so_err, &so_err_len) == -1)
             {
                log_msg(LOG_ERR, "getsockopt on %d failed: %s. closing.", trx[i].dst_sock, strerror(errno));
-               (void) close(trx[i].dst_sock);
+               (void)close(trx[i].dst_sock);
                trx[i].dst_sock = 0;
             }
             else if (so_err)
             {
                log_msg(LOG_ERR, "could not connect to NS: SO_ERROR = %d. closing.", so_err);
-               (void) close(trx[i].dst_sock);
+               (void)close(trx[i].dst_sock);
                trx[i].dst_sock = 0;
             }
             else
@@ -607,19 +656,17 @@ static int dispatch_packets(int udp_sock, int tcp_sock, dns_trx_t *trx, int trx_
                if (send_to_dns(&trx[i]) == -1)
                {
                   log_msg(LOG_ERR, "dropping data and closing %d", trx[i].dst_sock);
-                  (void) close(trx[i].dst_sock);
+                  (void)close(trx[i].dst_sock);
                   trx[i].dst_sock = 0;
                }
             }
-         } //if (FD_ISSET(trx[i].dst_sock, &wset))
+         } // if (FD_ISSET(trx[i].dst_sock, &wset))
       }
    }
    return 0;
 }
 
-
-
-//#define TEST_UTDNS_FUNC
+// #define TEST_UTDNS_FUNC
 #ifdef TEST_UTDNS_FUNC
 void test_utdns_func(void)
 {
@@ -632,7 +679,6 @@ void test_utdns_func(void)
 }
 #endif
 
-
 static void background(void)
 {
    pid_t pid, ppid;
@@ -641,34 +687,33 @@ static void background(void)
 
    ppid = getpid();
    pid = fork();
-   switch(pid)
+   switch (pid)
    {
-      case -1:
-         log_msg(LOG_ERR, "fork failed: %s. Staying in foreground", strerror(errno));
-         return;
+   case -1:
+      log_msg(LOG_ERR, "fork failed: %s. Staying in foreground", strerror(errno));
+      return;
 
-      case 0:
-         log_msg(LOG_INFO, "process backgrounded by parent %d, new pid = %d", ppid, getpid());
-         (void) umask(0);
-         if (setsid() == -1)
-            log_msg(LOG_ERR, "could not set process group ID: \"%s\"", strerror(errno));
-         if (chdir("/") == -1)
-            log_msg(LOG_ERR, "could not change directory to /: \"%s\"", strerror(errno));
-         // redirect standard files to /dev/null
-         if (!freopen( "/dev/null", "r", stdin))
-            log_msg(LOG_ERR, "could not reconnect stdin to /dev/null: \"%s\"", strerror(errno));
-         if (!freopen( "/dev/null", "w", stdout))
-            log_msg(LOG_ERR, "could not reconnect stdout to /dev/null: \"%s\"", strerror(errno));
-         if (!freopen( "/dev/null", "w", stderr))
-            log_msg(LOG_ERR, "could not reconnect stderr to /dev/null: \"%s\"", strerror(errno));
-         return;
+   case 0:
+      log_msg(LOG_INFO, "process backgrounded by parent %d, new pid = %d", ppid, getpid());
+      (void)umask(0);
+      if (setsid() == -1)
+         log_msg(LOG_ERR, "could not set process group ID: \"%s\"", strerror(errno));
+      if (chdir("/") == -1)
+         log_msg(LOG_ERR, "could not change directory to /: \"%s\"", strerror(errno));
+      // redirect standard files to /dev/null
+      if (!freopen("/dev/null", "r", stdin))
+         log_msg(LOG_ERR, "could not reconnect stdin to /dev/null: \"%s\"", strerror(errno));
+      if (!freopen("/dev/null", "w", stdout))
+         log_msg(LOG_ERR, "could not reconnect stdout to /dev/null: \"%s\"", strerror(errno));
+      if (!freopen("/dev/null", "w", stderr))
+         log_msg(LOG_ERR, "could not reconnect stderr to /dev/null: \"%s\"", strerror(errno));
+      return;
 
-      default:
-         log_msg(LOG_DEBUG, "parent %d exits, background pid = %d", ppid, pid);
-         exit(EXIT_SUCCESS);
+   default:
+      log_msg(LOG_DEBUG, "parent %d exits, background pid = %d", ppid, pid);
+      exit(EXIT_SUCCESS);
    }
 }
-
 
 static void drop_privileges(void)
 {
@@ -678,27 +723,26 @@ static void drop_privileges(void)
    // drop priviledges if root
    if (setgid(NOBODY) == -1)
       log_msg(LOG_ERR, "setgid() failed: %s", strerror(errno)),
-         exit(EXIT_FAILURE);
+          exit(EXIT_FAILURE);
    if (setuid(NOBODY) == -1)
       log_msg(LOG_ERR, "setuid() failed: %s", strerror(errno)),
-         exit(EXIT_FAILURE);
+          exit(EXIT_FAILURE);
    log_msg(LOG_NOTICE, "privileges dropped");
 }
-
 
 static void usage(const char *argv0)
 {
    printf(
-         "UDP/DNS-to-TCP/DNS-Translator %s, Bernhard R. Fischer, 4096R/8E24F29D <bf@abenteuerland.at>.\n"
-         "Usage: %s [OPTIONS] <NS ip>\n"
-         "   -4 .......... Bind to IPv4 only instead of IP + IPv6.\n"
-         "   -b .......... Background process and log to syslog.\n"
-         "   -d .......... Set log level to LOG_DEBUG.\n"
-         "   -p <port> ... Set incoming UDP port number.\n"
-         "   -P <port> ... Set destination port number.\n",
-         PACKAGE_VERSION, argv0);
+       "UDP/DNS-to-TCP/DNS-Translator %s, Bernhard R. Fischer, 4096R/8E24F29D <bf@abenteuerland.at>.\n"
+       "Usage: %s [OPTIONS] <NS ip>\n"
+       "   -4 .......... Bind to IPv4 only instead of IP + IPv6.\n"
+       "   -b .......... Background process and log to syslog.\n"
+       "   -d .......... Set log level to LOG_DEBUG.\n"
+       "   -p <port> ... Set incoming UDP port number.\n"
+       "   -P <port> ... Set destination port number.\n"
+       "   -x <socks5://[user:password@]server:port> ... Via socks5 proxy\n",
+       PACKAGE_VERSION, argv0);
 }
-
 
 int main(int argc, char **argv)
 {
@@ -712,37 +756,41 @@ int main(int argc, char **argv)
 #endif
 
 #ifdef DEBUG
-   (void) init_log("stderr", debuglevel);
+   (void)init_log("stderr", debuglevel);
 #endif
 
    int dst_port = 53;
-   while ((c = getopt(argc, argv, "4bdhp:P:")) != -1)
+   while ((c = getopt(argc, argv, "4bdhp:P:x:")) != -1)
    {
       switch (c)
       {
-         case '4':
-            family = AF_INET;
-            break;
+      case '4':
+         family = AF_INET;
+         break;
 
-         case 'b':
-            bground++;
-            break;
+      case 'b':
+         bground++;
+         break;
 
-         case 'd':
-            debuglevel = LOG_DEBUG;
-            break;
+      case 'd':
+         debuglevel = LOG_DEBUG;
+         break;
 
-         case 'h':
-            usage(argv[0]);
-            exit(EXIT_SUCCESS);
+      case 'h':
+         usage(argv[0]);
+         exit(EXIT_SUCCESS);
 
-         case 'p':
-            udp_port = atoi(optarg);
-            break;
+      case 'p':
+         udp_port = atoi(optarg);
+         break;
 
-	 case 'P':
-	    dst_port = atoi(optarg);
-	    break;
+      case 'P':
+         dst_port = atoi(optarg);
+         break;
+
+      case 'x':
+         socks5_proxy_url = optarg;
+         break;
       }
    }
 
@@ -771,24 +819,23 @@ int main(int argc, char **argv)
 
    if (bground)
    {
-      (void) init_log(NULL, debuglevel);
+      (void)init_log(NULL, debuglevel);
       background();
    }
    else
-      (void) init_log("stderr", debuglevel);
+      (void)init_log("stderr", debuglevel);
 
    if ((trx = (dns_trx_t *)calloc(MAX_TRX, sizeof(*trx))) == NULL)
    {
       perror("calloc");
-      (void) close(udp_sock);
+      (void)close(udp_sock);
       return -1;
    }
 
-   dispatch_packets(udp_sock, tcp_sock, trx, MAX_TRX, (struct sockaddr*) &in, sizeof(in));
+   dispatch_packets(udp_sock, tcp_sock, trx, MAX_TRX, (struct sockaddr *)&in, sizeof(in));
    free(trx);
    close(tcp_sock);
    close(udp_sock);
 
    return 0;
 }
-

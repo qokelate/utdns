@@ -50,6 +50,11 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>     // inet_addr()
 
+#include "socks5.hpp"
+
+
+#define HAVE_CONFIG_H 1
+
 #ifdef HAVE_CONFIG_H
 #include "config.h"
 #else
@@ -772,7 +777,7 @@ int main(int argc, char **argv)
    else
       (void) init_log("stderr", debuglevel);
 
-   if ((trx = calloc(MAX_TRX, sizeof(*trx))) == NULL)
+   if ((trx = (dns_trx_t *)calloc(MAX_TRX, sizeof(*trx))) == NULL)
    {
       perror("calloc");
       (void) close(udp_sock);

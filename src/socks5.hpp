@@ -4,6 +4,15 @@
 
 #include <string>
 
+
+
+#include <sys/socket.h>  
+#include <netinet/in.h>  
+#include <netdb.h>       
+#include <arpa/inet.h>   
+#include <unistd.h>      
+
+
 //#include "SCE_socks5.h"
 #if __has_include(<sys/ioctl.h>)
 #include <sys/ioctl.h>

@@ -4,7 +4,7 @@
 
 ```
 UDP/DNS-to-TCP/DNS-Translator 1.3.0, Bernhard R. Fischer, 4096R/8E24F29D <bf@abenteuerland.at>.
-Usage: ./1.bin [OPTIONS] <NS ip>
+Usage: utdns [OPTIONS] <NS ip>
    -4 .......... Bind to IPv4 only instead of IP + IPv6.
    -b .......... Background process and log to syslog.
    -d .......... Set log level to LOG_DEBUG.
